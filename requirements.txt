@@ -1,0 +1,27 @@
+# Secretary: transcription + diarization GUI
+# Python 3.10+
+
+# GUI
+customtkinter>=5.2.0
+
+# ASR
+openai-whisper>=20231117
+
+# Diarization (HF token required)
+pyannote.audio>=3.0.0
+
+# Audio
+soundfile>=0.12.0
+librosa>=0.10.0
+numpy>=1.24.0
+
+# PyTorch (install separately if needed: pip install torch)
+torch
+torchaudio
+
+# Config
+python-dotenv>=1.0.0
+
+# Optional: if pyannote dependency issues (uncomment if needed)
+# setuptools==59.5.0
+# speechbrain==0.5.16
