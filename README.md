@@ -1,22 +1,51 @@
 # Secretary
 
-Python GUI for **transcription + speaker diarization**: upload an audio file, run [Whisper](https://github.com/openai/whisper) and [pyannote.audio](https://github.com/pyannote/pyannote-audio) to get a transcript with “who said what,” then edit speaker labels, correct or merge speakers, and export.
+Python GUI for **transcription + speaker diarization**: upload an audio file, run [Whisper](https://github.com/openai/whisper) and [pyannote.audio](https://github.com/pyannote/pyannote-audio) to get a transcript with "who said what," then edit speaker labels, correct or merge speakers, and export.
 
 ## Features
 
-- **Upload** WAV, MP3, FLAC, M4A (or OGG)
-- **Transcribe & diarize** in one step (Whisper + pyannote)
-- **Edit** per-segment speaker (dropdown) and text
-- **Label speakers** (e.g. `SPEAKER_00` → “Alice”)
+### Transcription & Diarization
+- **Upload** WAV, MP3, FLAC, M4A, OGG
+- **Transcribe & diarize** in one step (Whisper + pyannote) with word-level timestamps
+- **Fast mode** — Whisper full-file then diarize and assign speakers (default)
+- **Accurate mode** — Diarize first, then run Whisper per speaker segment for cleaner per-turn text
+- **Re-diarize** — Re-run only diarization without re-transcribing (keeps Whisper results)
+- **VAD pre-filter** — Optional Voice Activity Detection to trim silence before Whisper (faster, fewer hallucinations)
+- **Min segment length** — Automatically merge segments shorter than a configurable threshold
+
+### Editing
+- **Edit** per-segment speaker (dropdown) and text inline
+- **Label speakers** (e.g. `SPEAKER_00` → "Alice")
 - **Merge speakers** (merge one ID into another)
-- **Export** TXT, SRT, VTT, JSON (project save)
-- **Load project** from JSON to continue editing
-- **Open at time** (open default player for the file; seek manually)
+- **Split segments** — Split a segment at any time point (scissors button per row)
+- **Undo / Redo** — 50-deep state stack with Ctrl+Z / Ctrl+Y
+
+### Playback
+- **In-app playback** — Click ▶ on any row to hear that segment instantly (sounddevice + librosa fallback for M4A)
+- **Open in player** — Open audio file in system default player
+
+### Visual
+- **Speaker colors** — Color-coded strip on each row (12-color palette, updates live on speaker change)
+- **Search** — Find text in transcript with highlight, scroll-to-match, and Next/Prev cycling
+- **Statistics panel** — Per-speaker duration, segment count, and percentage breakdown
+- **Dark / Light theme** — Toggle persisted across sessions
+
+### Export
+- **TXT** — `0.00 - 2.50 [Alice] text` (one line per segment)
+- **SRT / VTT** — Subtitles with speaker in the text
+- **JSON** — Full project (segments + speaker labels + audio path) for save/load
+
+### Advanced
+- **Batch processing** — Queue multiple audio files, process sequentially with per-file progress bars
+- **Summarization** — Generate meeting summaries via local Ollama LLM (configurable model and endpoint)
+- **Logging** — Pipeline steps and errors logged to `~/.secretary/logs/` with 7-day rotation
+- **First-run setup** — Guided HF token prompt on first launch with links to token creation and model conditions
 
 ## Requirements
 
 - **Python 3.10+**
 - **Hugging Face token** (free): required for pyannote speaker-diarization. You must accept the model terms on the model page.
+- **Ollama** (optional): only needed for transcript summarization. Install from [ollama.com](https://ollama.com) and pull a model (e.g. `ollama pull llama3`).
 
 ## Installation
 
@@ -35,7 +64,7 @@ Python GUI for **transcription + speaker diarization**: upload an audio file, ru
    pip install -r requirements.txt
    ```
 
-   If you don’t have PyTorch yet, install it (e.g. with CUDA if you have a GPU):
+   If you don't have PyTorch yet, install it (e.g. with CUDA if you have a GPU):
 
    ```bash
    pip install torch torchaudio
@@ -43,39 +72,37 @@ Python GUI for **transcription + speaker diarization**: upload an audio file, ru
 
 3. **Hugging Face token**
 
-   - Create a **read** token (or fine-grained with read access) at [https://hf.co/settings/tokens](https://hf.co/settings/tokens)
-   - Accept the user conditions for the diarization pipeline: [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) (log in, then accept to share contact info; no extra sub-models to accept)
+   - Create a **read** token at [https://hf.co/settings/tokens](https://hf.co/settings/tokens)
+   - Accept the user conditions for [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
    - Put the token in one of these (first found wins):
-     - **Recommended:** Copy `config.json.example` to `config.json` in the project folder and set `"HUGGINGFACE_TOKEN": "hf_xxxx"`. This avoids terminal environment variable issues.
+     - **Recommended:** Copy `config.json.example` to `config.json` and set `"HUGGINGFACE_TOKEN": "hf_xxxx"`
      - Or use `.env` with `HUGGINGFACE_TOKEN=your_token`
-     - Or create `~/.secretary/config.json` (or `%USERPROFILE%\.secretary\config.json`) with `{"HUGGINGFACE_TOKEN": "hf_xxxx"}`
-   - The app uses **speaker-diarization-community-1**: expects mono 16 kHz audio (we resample and pass a waveform dict). Pipelines run on CPU by default; pyannote can use GPU if you call `pipeline.to(torch.device("cuda"))` (future enhancement).
+     - Or create `~/.secretary/config.json` with `{"HUGGINGFACE_TOKEN": "hf_xxxx"}`
+   - On first launch, the app will prompt for the token if not found.
 
 ## Usage
-
-From the project root:
 
 ```bash
 python run.py
 ```
 
 1. **Select audio** — choose a WAV/MP3/FLAC/M4A file.
-2. Optionally set **Whisper model** (tiny → large) and **Language** (blank = auto).
-3. Click **Transcribe & diarize** — wait for Whisper and diarization to finish.
-4. Edit the **segment table**: change speaker per row (dropdown) or edit text.
-5. **Label speaker**: pick a speaker ID, enter a display name, click “Apply label” (used in exports).
-6. **Merge speakers**: choose “Merge A → B” to turn all A into B.
-7. **Export** TXT, SRT, VTT, or JSON. Use **Load project…** to open a saved JSON and continue editing.
+2. Set **Whisper model** (tiny → large), **Language** (blank = auto), **Mode** (Fast/Accurate), and optionally enable **VAD pre-filter** or set **Min seg** threshold.
+3. Click **Transcribe & diarize** — wait for the pipeline to finish.
+4. Edit the **segment table**: change speaker per row, edit text, split segments, or play audio.
+5. **Label speaker** / **Merge speakers** to clean up diarization results.
+6. **Search** the transcript, view **Stats**, or **Summarize** via Ollama.
+7. **Export** TXT, SRT, VTT, or JSON. Use **Load project** to reopen a saved JSON.
+8. Use **Batch** to queue and process multiple files at once.
 
-## Export formats
+## Testing
 
-- **TXT** — One line per segment: `start end SPEAKER_00 text` (compatible with [pyannote-whisper](https://github.com/yinruiqing/pyannote-whisper) style).
-- **SRT / VTT** — Subtitles with speaker in the text.
-- **JSON** — Full project (segments + speaker labels + audio path) for later load.
+```bash
+pip install pytest
+python -m pytest tests/ -v
+```
 
-## Optional / future
-
-See [FUTURE_IDEAS.md](FUTURE_IDEAS.md) for planned features (playback sync to timestamp, search, re-run diarization only, batch, theme, etc.).
+18 unit tests covering models, diarize utilities, and all export formats.
 
 ## License
 
