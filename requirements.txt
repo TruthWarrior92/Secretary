@@ -23,6 +23,9 @@ torchaudio
 # Config
 python-dotenv>=1.0.0
 
+# Dev / testing
+pytest>=7.0.0
+
 # Optional: if pyannote dependency issues (uncomment if needed)
 # setuptools==59.5.0
 # speechbrain==0.5.16

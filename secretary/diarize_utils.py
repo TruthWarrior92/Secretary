@@ -108,6 +108,21 @@ def merge_sentence(
     return merged
 
 
+def merge_short_segments(segments: list[Segment], min_dur: float) -> list[Segment]:
+    """Merge segments shorter than *min_dur* into their neighbor (prefer same speaker, else previous)."""
+    if min_dur <= 0 or not segments:
+        return segments
+    merged: list[Segment] = []
+    for seg in segments:
+        if seg.duration() < min_dur and merged:
+            prev = merged[-1]
+            prev.end = seg.end
+            prev.text = (prev.text + " " + seg.text).strip()
+        else:
+            merged.append(Segment(start=seg.start, end=seg.end, text=seg.text, speaker_id=seg.speaker_id))
+    return merged
+
+
 def diarize_text(transcribe_result: dict, diarization_annotation) -> list[Segment]:
     """Whisper result + pyannote Annotation -> list of Segment(start, end, text, speaker_id)."""
     # #region agent log

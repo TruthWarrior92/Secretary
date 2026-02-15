@@ -207,9 +207,11 @@ def run_pipeline(
     *,
     model_name: str = "base",
     language: str | None = None,
+    use_vad: bool = False,
     progress_callback: Callable[[str], None] | None = None,
 ) -> list[Segment]:
     """Run Whisper then diarization; return list of Segment. progress_callback(message) optional."""
+    import numpy as np
     audio_path = _ensure_audio_path(audio_path)
 
     if progress_callback:
@@ -220,6 +222,19 @@ def run_pipeline(
     if progress_callback:
         progress_callback("Loading audio...")
     whisper_audio = _load_audio_as_numpy(audio_path, target_sr=16000)
+
+    # Optional VAD pre-filter: zero-out non-speech regions so Whisper skips silence
+    if use_vad:
+        if progress_callback:
+            progress_callback("Running VAD pre-filter...")
+        vad_regions = _run_vad_filter(audio_path)
+        if vad_regions:
+            mask = np.zeros_like(whisper_audio)
+            sr = 16000
+            for vs, ve in vad_regions:
+                s0, s1 = int(vs * sr), min(int(ve * sr), len(mask))
+                mask[s0:s1] = whisper_audio[s0:s1]
+            whisper_audio = mask
     # #region agent log
     _debug_log("whisper_audio_loaded", {"shape": list(whisper_audio.shape), "duration_sec": round(len(whisper_audio) / 16000, 4), "dtype": str(whisper_audio.dtype)})
     # #endregion
@@ -288,20 +303,136 @@ def run_pipeline(
     # #region agent log
     _debug_log("segments_before_clamp", {"count": len(segments), "duration_sec": round(duration_sec, 4), "segments": [{"start": round(s.start, 4), "end": round(s.end, 4), "speaker_id": s.speaker_id, "text_preview": (s.text or "")[:30]} for s in segments]})
     # #endregion
-    # Pad segment end times slightly — word_timestamps clips ends tightly to last word boundary
+    _post_process_segments(segments, duration_sec)
+    # #region agent log
+    _debug_log("segments_after_clamp", {"count": len(segments), "duration_sec": round(duration_sec, 4), "segments": [{"start": round(s.start, 4), "end": round(s.end, 4), "speaker_id": s.speaker_id} for s in segments]})
+    # #endregion
+    return segments
+
+
+def run_diarization_only(
+    audio_path: str | Path,
+    transcribe_result: dict,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> list[Segment]:
+    """Re-run diarization using a cached Whisper transcribe_result (skips Whisper)."""
+    audio_path = _ensure_audio_path(audio_path)
+
+    if progress_callback:
+        progress_callback("Loading diarization pipeline...")
+    pipeline = load_diarization_pipeline()
+
+    if progress_callback:
+        progress_callback("Loading audio...")
+    audio_input = _load_audio_for_diarization(audio_path)
+    duration_sec = float(audio_input["waveform"].shape[-1]) / audio_input["sample_rate"]
+
+    if progress_callback:
+        progress_callback("Running diarization...")
+    try:
+        diarization_result = pipeline(audio_input, min_speakers=2, max_speakers=25)
+    except TypeError:
+        diarization_result = pipeline(audio_input)
+
+    annotation = diarization_result
+    if hasattr(diarization_result, "speaker_diarization"):
+        annotation = diarization_result.speaker_diarization
+
+    if progress_callback:
+        progress_callback("Assigning speakers...")
+    segments = diarize_text(transcribe_result, annotation)
+
+    _post_process_segments(segments, duration_sec)
+    return segments
+
+
+def run_pipeline_accurate(
+    audio_path: str | Path,
+    *,
+    model_name: str = "base",
+    language: str | None = None,
+    use_vad: bool = False,
+    progress_callback: Callable[[str], None] | None = None,
+) -> list[Segment]:
+    """Accurate mode: diarize first, then run Whisper per speaker segment for cleaner per-turn text."""
+    import numpy as np
+    audio_path = _ensure_audio_path(audio_path)
+
+    if progress_callback:
+        progress_callback("Loading audio…")
+    full_audio = _load_audio_as_numpy(audio_path, target_sr=16000)
+    sr = 16000
+    audio_input = _load_audio_for_diarization(audio_path)
+    duration_sec = float(audio_input["waveform"].shape[-1]) / audio_input["sample_rate"]
+
+    if progress_callback:
+        progress_callback("Loading diarization pipeline…")
+    dia_pipeline = load_diarization_pipeline()
+
+    if progress_callback:
+        progress_callback("Running diarization…")
+    try:
+        diarization_result = dia_pipeline(audio_input, min_speakers=2, max_speakers=25)
+    except TypeError:
+        diarization_result = dia_pipeline(audio_input)
+    annotation = diarization_result
+    if hasattr(diarization_result, "speaker_diarization"):
+        annotation = diarization_result.speaker_diarization
+
+    if progress_callback:
+        progress_callback("Loading Whisper…")
+    model = load_whisper(model_name)
+
+    if progress_callback:
+        progress_callback("Transcribing per-speaker segments…")
+    segments: list[Segment] = []
+    tracks = list(annotation.itertracks(yield_label=True))
+    for i, (seg, _, label) in enumerate(tracks):
+        start_sample = int(seg.start * sr)
+        end_sample = min(int(seg.end * sr), len(full_audio))
+        if end_sample <= start_sample:
+            continue
+        chunk = full_audio[start_sample:end_sample].astype(np.float32)
+        result = model.transcribe(chunk, language=language or None, word_timestamps=True)
+        text = result.get("text", "").strip()
+        if text:
+            segments.append(Segment(start=seg.start, end=seg.end, text=text, speaker_id=label))
+        if progress_callback and (i % 5 == 0 or i == len(tracks) - 1):
+            progress_callback(f"Transcribing segment {i + 1}/{len(tracks)}…")
+
+    _post_process_segments(segments, duration_sec)
+    return segments
+
+
+def _run_vad_filter(audio_path: str | Path) -> list[tuple[float, float]]:
+    """Run VAD and return list of (start, end) speech regions in seconds."""
+    audio_input = _load_audio_for_diarization(audio_path)
+    try:
+        from pyannote.audio.pipelines import VoiceActivityDetection
+        from pyannote.audio import Model
+        from config import get_hf_token
+        token = get_hf_token()
+        vad_model = Model.from_pretrained("pyannote/segmentation-3.0", use_auth_token=token)
+        vad_pipeline = VoiceActivityDetection(segmentation=vad_model)
+        HYPER_PARAMS = {"onset": 0.5, "offset": 0.5, "min_duration_on": 0.2, "min_duration_off": 0.2}
+        vad_pipeline.instantiate(HYPER_PARAMS)
+        vad_result = vad_pipeline(audio_input)
+        regions = [(seg.start, seg.end) for seg in vad_result.get_timeline()]
+        return regions
+    except Exception:
+        return []
+
+
+def _post_process_segments(segments: list[Segment], duration_sec: float) -> None:
+    """End-pad, clamp, and remove zero-length segments in-place."""
     END_PAD_SEC = 0.25
     for i, seg in enumerate(segments):
         next_start = segments[i + 1].start if i + 1 < len(segments) else duration_sec
         seg.end = min(seg.end + END_PAD_SEC, next_start, duration_sec)
-    # Clamp segment times to actual audio duration (Whisper can overshoot)
     for seg in segments:
         seg.start = max(0.0, min(seg.start, duration_sec))
         seg.end = max(0.0, min(seg.end, duration_sec))
         if seg.end < seg.start:
             seg.end = seg.start
-    # Remove zero-length segments (e.g. from clamping past-end segments)
-    segments = [s for s in segments if s.end > s.start]
-    # #region agent log
-    _debug_log("segments_after_clamp", {"count": len(segments), "duration_sec": round(duration_sec, 4), "segments": [{"start": round(s.start, 4), "end": round(s.end, 4), "speaker_id": s.speaker_id} for s in segments]})
-    # #endregion
-    return segments
+    segments[:] = [s for s in segments if s.end > s.start]

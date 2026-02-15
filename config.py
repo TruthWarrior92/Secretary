@@ -47,6 +47,28 @@ def get_config_dir() -> Path:
     return d
 
 
+def _config_path() -> Path:
+    return _PROJECT_ROOT / "config.json"
+
+
+def get_config() -> dict:
+    """Read the whole config.json as a dict (empty dict if missing)."""
+    p = _config_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_config(data: dict) -> None:
+    """Merge *data* into config.json and write back."""
+    cfg = get_config()
+    cfg.update(data)
+    _config_path().write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 # Defaults (can be overridden by GUI and persisted later)
 DEFAULT_WHISPER_MODEL = "base"
 DEFAULT_LANGUAGE = None  # auto-detect

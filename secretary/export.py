@@ -11,14 +11,14 @@ def to_txt(
     *,
     label_map: dict[str, str] | None = None,
 ) -> None:
-    """Pyannote-whisper style: 'start end SPEAKER_00 text' per line."""
+    """Format: 'start - end [Speaker] text' per line."""
     label_map = label_map or {}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for seg in segments:
         spk = get_display_speaker(seg.speaker_id, label_map)
-        line = f"{seg.start:.2f} {seg.end:.2f} {spk} {seg.text}"
+        line = f"{seg.start:.2f} - {seg.end:.2f} [{spk}] {seg.text}"
         lines.append(line)
     path.write_text("\n".join(lines), encoding="utf-8")
 
