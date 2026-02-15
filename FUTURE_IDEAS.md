@@ -6,7 +6,7 @@ Track ideas and features to consider after the initial release. Add new items at
 
 ## From plan (§6 – other functions)
 
-- [ ] **Playback sync** — Click segment row to jump to that time (embedded or system player).
+- [x] **Playback sync** — Click segment row ▶ to play that segment in-app; "Open in player" still opens file in system player.
 - [ ] **Search in transcript** — Text search across segments; highlight and scroll to match.
 - [ ] **Re-run only diarization** — Keep Whisper result; re-run diarization and re-assign speakers without re-transcribing.
 - [ ] **Import/export JSON project** — Save and load project (audio path + segments + speaker labels) to continue editing later.
@@ -38,5 +38,7 @@ Track ideas and features to consider after the initial release. Add new items at
 ---
 
 ## Other ideas
+
+- [ ] **Diarization all SPEAKER_00** — If pipeline returns a single speaker for the whole file: try min_speakers/max_speakers pipeline options, or verify audio (sample rate, channels) and waveform format passed to pyannote; check if community-1 has known single-speaker behavior.
 
 _(Add new items here as they come up.)_

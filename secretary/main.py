@@ -2,6 +2,8 @@
 import os
 import sys
 import threading
+import traceback
+import warnings
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -17,11 +19,24 @@ from config import DEFAULT_WHISPER_MODEL, get_hf_token
 from secretary.diarize_utils import diarize_text
 from secretary.export import to_json, to_srt, to_txt, to_vtt, load_json
 from secretary.models import Segment, get_display_speaker
-from secretary.pipeline import load_diarization_pipeline, load_whisper, run_pipeline
+from secretary.pipeline import load_diarization_pipeline, load_whisper, log_pipeline_error, run_pipeline
 
 
 # Supported audio extensions
 AUDIO_EXTENSIONS = (".wav", ".mp3", ".flac", ".m4a", ".ogg")
+
+
+def norm_path_for_windows(path: str | Path) -> str:
+    """Normalize path so Windows (UNC, startfile, isfile) works. Use backslashes on Windows."""
+    p = Path(path) if not isinstance(path, Path) else path
+    s = str(p)
+    if os.name == "nt":
+        # UNC: //server/share -> \\server\share; and forward slashes -> backslashes
+        if s.startswith("//") and not s.startswith("\\\\"):
+            s = "\\\\" + s[2:].replace("/", "\\")
+        else:
+            s = os.path.normpath(s)
+    return s
 
 
 def get_audio_duration(path: str) -> float:
@@ -32,8 +47,11 @@ def get_audio_duration(path: str) -> float:
         return info.duration
     except Exception:
         try:
-            import librosa
-            y, sr = librosa.load(path, sr=None, duration=0)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=FutureWarning)
+                warnings.simplefilter("ignore", category=UserWarning)
+                import librosa
+                y, sr = librosa.load(path, sr=None, duration=0)
             return len(y) / sr if sr else 0
         except Exception:
             return 0.0
@@ -111,17 +129,17 @@ class SecretaryApp(ctk.CTk):
         edit_frame.pack(fill="x", padx=10, pady=10)
 
         ctk.CTkLabel(edit_frame, text="Label speaker:").pack(side="left", padx=(0, 5))
-        self._label_speaker_combo = ctk.CTkComboBox(edit_frame, values=[""], width=100, state="disabled")
+        self._label_speaker_combo = ctk.CTkComboBox(edit_frame, values=[""], width=150, state="disabled")
         self._label_speaker_combo.pack(side="left", padx=(0, 5))
         self._label_name_entry = ctk.CTkEntry(edit_frame, width=120, placeholder_text="Display name")
         self._label_name_entry.pack(side="left", padx=(0, 5))
         ctk.CTkButton(edit_frame, text="Apply label", width=90, command=self._on_apply_label).pack(side="left", padx=(0, 15))
 
         ctk.CTkLabel(edit_frame, text="Merge:").pack(side="left", padx=(0, 5))
-        self._merge_from_combo = ctk.CTkComboBox(edit_frame, values=[""], width=100, state="disabled")
+        self._merge_from_combo = ctk.CTkComboBox(edit_frame, values=[""], width=150, state="disabled")
         self._merge_from_combo.pack(side="left", padx=(0, 5))
         ctk.CTkLabel(edit_frame, text="→").pack(side="left", padx=2)
-        self._merge_to_combo = ctk.CTkComboBox(edit_frame, values=[""], width=100, state="disabled")
+        self._merge_to_combo = ctk.CTkComboBox(edit_frame, values=[""], width=150, state="disabled")
         self._merge_to_combo.pack(side="left", padx=(0, 5))
         ctk.CTkButton(edit_frame, text="Merge speakers", width=110, command=self._on_merge_speakers).pack(side="left", padx=(0, 15))
 
@@ -137,6 +155,7 @@ class SecretaryApp(ctk.CTk):
 
     def _on_select_file(self):
         path = filedialog.askopenfilename(
+            parent=self,
             title="Select audio",
             filetypes=[
                 ("Audio", "*.wav *.mp3 *.flac *.m4a *.ogg"),
@@ -146,8 +165,8 @@ class SecretaryApp(ctk.CTk):
             ],
         )
         if path:
-            self.audio_path = path
-            name = Path(path).name
+            self.audio_path = norm_path_for_windows(path)
+            name = Path(self.audio_path).name
             dur = get_audio_duration(path)
             dur_s = f"{dur:.1f}s" if dur > 0 else "?"
             self._file_label.configure(text=f"{name} ({dur_s})")
@@ -160,9 +179,10 @@ class SecretaryApp(ctk.CTk):
         if not get_hf_token():
             messagebox.showerror(
                 "Missing token",
-                "Set HUGGINGFACE_TOKEN in .env or ~/.secretary/config.\n"
-                "Create token: https://hf.co/settings/tokens\n"
-                "Accept terms: https://huggingface.co/pyannote/speaker-diarization",
+                "Set HUGGINGFACE_TOKEN in config.json (recommended), .env, or ~/.secretary/config.json.\n"
+                "Copy config.json.example to config.json and add your token.\n"
+                "Create token: https://hf.co/settings/tokens (use a read token)\n"
+                "Accept conditions: https://huggingface.co/pyannote/speaker-diarization-community-1",
             )
             return
         self._run_button.configure(state="disabled")
@@ -180,7 +200,9 @@ class SecretaryApp(ctk.CTk):
                 )
                 self.after(0, lambda: self._on_pipeline_done(segs, None))
             except Exception as e:
-                self.after(0, lambda: self._on_pipeline_done([], str(e)))
+                err_msg = str(e)
+                log_pipeline_error(err_msg, traceback.format_exc())
+                self.after(0, lambda: self._on_pipeline_done([], err_msg))
 
         threading.Thread(daemon=True, target=run).start()
 
@@ -188,7 +210,10 @@ class SecretaryApp(ctk.CTk):
         self._run_button.configure(state="normal")
         if error:
             self._progress_var.set("")
-            messagebox.showerror("Pipeline failed", error)
+            msg = error
+            if any(k in error.lower() for k in ("token", "auth", "401", "403", "gated", "accept")):
+                msg += "\n\nCheck: config.json or .env has HUGGINGFACE_TOKEN (use a read token) and you accepted conditions at https://huggingface.co/pyannote/speaker-diarization-community-1."
+            messagebox.showerror("Pipeline failed", msg)
             return
         self.segments = segments
         self._progress_var.set("")
@@ -219,6 +244,12 @@ class SecretaryApp(ctk.CTk):
             end_l = ctk.CTkLabel(row_frame, text=f"{seg.end:.2f}", width=70)
             end_l.pack(side="left", padx=2, pady=2)
             row["end"] = end_l
+
+            play_btn = ctk.CTkButton(
+                row_frame, text="▶", width=36, command=lambda s=seg: self._play_segment(s)
+            )
+            play_btn.pack(side="left", padx=2, pady=2)
+            row["play"] = play_btn
 
             combo = ctk.CTkComboBox(
                 row_frame,
@@ -258,7 +289,11 @@ class SecretaryApp(ctk.CTk):
         if not spk or not name:
             return
         self.speaker_label_map[spk] = name
+        for seg in self.segments:
+            if seg.speaker_id == spk:
+                seg.speaker_id = name
         self._refresh_table()
+        self._refresh_speaker_combos()
 
     def _on_merge_speakers(self):
         from_id = self._merge_from_combo.get()
@@ -279,8 +314,10 @@ class SecretaryApp(ctk.CTk):
             messagebox.showinfo("Export", "No transcript to export. Run Transcribe & diarize first.")
             return
         path = filedialog.asksaveasfilename(
+            parent=self,
             defaultextension=f".{fmt}",
             filetypes=[(fmt.upper(), f"*.{fmt}")],
+            initialdir=os.path.expanduser("~"),
         )
         if not path:
             return
@@ -296,34 +333,82 @@ class SecretaryApp(ctk.CTk):
                     self.segments,
                     path,
                     label_map=self.speaker_label_map,
-                    audio_path=self.audio_path,
+                    audio_path=norm_path_for_windows(self.audio_path) if self.audio_path else None,
                 )
             messagebox.showinfo("Export", f"Saved to {path}")
         except Exception as e:
             messagebox.showerror("Export failed", str(e))
 
     def _on_open_at_time(self):
-        if not self.segments:
-            messagebox.showinfo("Playback", "No segments. Run pipeline first.")
+        """Open system default player for the audio file (fallback if in-app play not enough)."""
+        if not self.audio_path:
+            messagebox.showinfo("Playback", "No audio file loaded.")
             return
-        # Find first selected or first segment; open system default player at timestamp if possible
-        start = self.segments[0].start
-        if self.audio_path and os.path.isfile(self.audio_path):
-            import subprocess
-            import platform
-            path = self.audio_path
-            if platform.system() == "Windows":
-                os.startfile(path)
-            elif platform.system() == "Darwin":
-                subprocess.run(["open", path], check=False)
-            else:
-                subprocess.run(["xdg-open", path], check=False)
-            messagebox.showinfo("Playback", f"Opened audio. Seek to {start:.1f}s in your player.")
+        path = norm_path_for_windows(self.audio_path)
+        if not os.path.isfile(path):
+            messagebox.showerror("Playback", f"File not found:\n{path}")
+            return
+        import subprocess
+        import platform
+        if platform.system() == "Windows":
+            os.startfile(path)
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", path], check=False)
         else:
-            messagebox.showinfo("Playback", f"No audio path; seek to {start:.1f}s in your player.")
+            subprocess.run(["xdg-open", path], check=False)
+        if self.segments:
+            messagebox.showinfo("Playback", f"Opened in player. Seek to {self.segments[0].start:.1f}s for start.")
+        else:
+            messagebox.showinfo("Playback", "Opened in default player.")
+
+    def _play_segment(self, seg: "Segment"):
+        """Play the given segment's time range in-app (runs in thread)."""
+        if not self.audio_path:
+            messagebox.showinfo("Playback", "No audio file loaded.")
+            return
+        path = norm_path_for_windows(self.audio_path)
+        if not os.path.isfile(path):
+            messagebox.showerror("Playback", f"File not found:\n{path}")
+            return
+        start, end = seg.start, seg.end
+        def _run():
+            try:
+                import sounddevice as sd
+                chunk = None
+                sr = None
+                try:
+                    import soundfile as sf
+                    with sf.SoundFile(path) as f:
+                        sr = f.samplerate
+                        f.seek(int(start * sr))
+                        n = int((end - start) * sr)
+                        n = min(n, len(f) - f.tell())
+                        if n <= 0:
+                            return
+                        chunk = f.read(n, dtype="float32")
+                except Exception:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", category=FutureWarning)
+                        warnings.simplefilter("ignore", category=UserWarning)
+                        import librosa
+                        y, sr = librosa.load(path, sr=None, mono=True, dtype="float32")
+                    n0, n1 = int(start * sr), int(end * sr)
+                    n1 = min(n1, len(y))
+                    chunk = y[n0:n1] if n1 > n0 else None
+                if chunk is None or sr is None:
+                    return
+                if chunk.ndim == 2:
+                    chunk = chunk.mean(axis=1)
+                sd.play(chunk, sr)
+                sd.wait()
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda m=err_msg: messagebox.showerror("Playback failed", m))
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_load_project(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON project", "*.json"), ("All", "*.*")])
+        path = filedialog.askopenfilename(parent=self, filetypes=[("JSON project", "*.json"), ("All", "*.*")])
         if not path:
             return
         try:
@@ -331,8 +416,8 @@ class SecretaryApp(ctk.CTk):
             self.segments = segments
             self.speaker_label_map = label_map
             if audio_path:
-                self.audio_path = audio_path
-                self._file_label.configure(text=Path(audio_path).name)
+                self.audio_path = norm_path_for_windows(audio_path)
+                self._file_label.configure(text=Path(self.audio_path).name)
             self._refresh_table()
             self._refresh_speaker_combos()
             messagebox.showinfo("Load", "Project loaded.")

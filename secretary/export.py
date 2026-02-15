@@ -36,7 +36,8 @@ def to_srt(
         h = int(sec // 3600)
         m = int((sec % 3600) // 60)
         s = sec % 60
-        return f"{h:02d}:{m:02d}:{int(s):02d},{int(s % 1 * 1000):03d}"
+        ms = round((s % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{int(s):02d},{ms:03d}"
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +61,8 @@ def to_vtt(
         h = int(sec // 3600)
         m = int((sec % 3600) // 60)
         s = sec % 60
-        return f"{h:02d}:{m:02d}:{int(s):02d}.{int(s % 1 * 1000):03d}"
+        ms = round((s % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{int(s):02d}.{ms:03d}"
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

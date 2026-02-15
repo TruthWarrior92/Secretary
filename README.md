@@ -43,11 +43,13 @@ Python GUI for **transcription + speaker diarization**: upload an audio file, ru
 
 3. **Hugging Face token**
 
-   - Create a token at [https://hf.co/settings/tokens](https://hf.co/settings/tokens)
-   - Accept the user conditions for the diarization model: [pyannote/speaker-diarization](https://huggingface.co/pyannote/speaker-diarization)
-   - Either:
-     - Copy `.env.example` to `.env` and set `HUGGINGFACE_TOKEN=your_token`, or
-     - Create `~/.secretary/config` (or `%USERPROFILE%\.secretary\config`) with a line: `HUGGINGFACE_TOKEN=your_token`
+   - Create a **read** token (or fine-grained with read access) at [https://hf.co/settings/tokens](https://hf.co/settings/tokens)
+   - Accept the user conditions for the diarization pipeline: [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) (log in, then accept to share contact info; no extra sub-models to accept)
+   - Put the token in one of these (first found wins):
+     - **Recommended:** Copy `config.json.example` to `config.json` in the project folder and set `"HUGGINGFACE_TOKEN": "hf_xxxx"`. This avoids terminal environment variable issues.
+     - Or use `.env` with `HUGGINGFACE_TOKEN=your_token`
+     - Or create `~/.secretary/config.json` (or `%USERPROFILE%\.secretary\config.json`) with `{"HUGGINGFACE_TOKEN": "hf_xxxx"}`
+   - The app uses **speaker-diarization-community-1**: expects mono 16 kHz audio (we resample and pass a waveform dict). Pipelines run on CPU by default; pyannote can use GPU if you call `pipeline.to(torch.device("cuda"))` (future enhancement).
 
 ## Usage
 

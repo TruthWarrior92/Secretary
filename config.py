@@ -1,16 +1,37 @@
-"""Paths and config: HF token, model defaults. Load from .env or user config."""
+"""Paths and config: HF token, model defaults. Load from JSON, .env, or legacy config file."""
+import json
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load .env from project root (directory containing config.py)
+_env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(_env_path)
+load_dotenv()  # also allow cwd .env
 
-# Hugging Face token (required for pyannote diarization)
+# Avoid huggingface_hub symlinks warning on Windows (cache still works)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
+_PROJECT_ROOT = Path(__file__).resolve().parent
+
+# Hugging Face token (required for pyannote diarization). Prefer JSON so terminal env issues don't affect it.
 def get_hf_token() -> str | None:
+    # 1) JSON config (most reliable; no terminal env involved)
+    for candidate in (_PROJECT_ROOT / "config.json", Path.home() / ".secretary" / "config.json"):
+        if candidate.exists():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+                token = data.get("HUGGINGFACE_TOKEN") or data.get("huggingface_token")
+                if token and isinstance(token, str):
+                    return token.strip()
+            except (json.JSONDecodeError, OSError):
+                pass
+    # 2) Environment variables
     token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")
     if token:
         return token.strip()
+    # 3) Legacy ~/.secretary/config (key=value lines)
     config_dir = Path.home() / ".secretary"
     config_file = config_dir / "config"
     if config_file.exists():
@@ -29,5 +50,5 @@ def get_config_dir() -> Path:
 # Defaults (can be overridden by GUI and persisted later)
 DEFAULT_WHISPER_MODEL = "base"
 DEFAULT_LANGUAGE = None  # auto-detect
-# Use pyannote/speaker-diarization (accept terms on HF). Alternatives: speaker-diarization-3.1, speaker-diarization-community-1
-DIARIZATION_MODEL = "pyannote/speaker-diarization"
+# Community-1: better benchmarks, simpler setup. Accept conditions: https://huggingface.co/pyannote/speaker-diarization-community-1
+DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
